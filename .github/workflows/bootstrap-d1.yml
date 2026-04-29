@@ -1,0 +1,273 @@
+name: 初始化 Cloudflare D1 数据库
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bootstrap-d1:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 从 wrangler.jsonc 解析 D1 数据库名称
+        id: resolve_d1_name
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "开始解析 wrangler.jsonc 中的 D1 数据库名称..."
+
+          D1_DATABASE_NAME="$(node -e '
+            const fs = require("fs");
+            const ts = require("typescript");
+            const file = "wrangler.jsonc";
+            const source = fs.readFileSync(file, "utf8");
+            const parsed = ts.parseConfigFileTextToJson(file, source);
+            if (parsed.error) {
+              process.stderr.write("无法将 wrangler.jsonc 解析为 JSONC 文件\n");
+              process.exit(1);
+            }
+            const name = parsed.config && typeof parsed.config.name === "string" ? parsed.config.name : "";
+            if (!name) {
+              process.stderr.write("wrangler.jsonc 文件中缺少必需的顶级“name”字段\n");
+              process.exit(1);
+            }
+            process.stdout.write(name);
+          ')"
+          D1_DATABASE_NAME="${D1_DATABASE_NAME:-}"
+          if [ -z "$D1_DATABASE_NAME" ]; then
+            echo "无法从 wrangler.jsonc 解析到 name" >&2
+            exit 1
+          fi
+
+          echo "database_name=${D1_DATABASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "已解析 D1 数据库名称: ${D1_DATABASE_NAME}"
+
+      - name: 确保 D1 数据库存在
+        id: ensure_d1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DB_NAME="${{ steps.resolve_d1_name.outputs.database_name }}"
+          echo "开始检查 D1 数据库是否存在..."
+          echo "目标数据库名称: ${DB_NAME}"
+          if ! LIST_JSON="$(npx wrangler d1 list --json)"; then
+            echo "通过 Wrangler 获取 D1 数据库列表失败。请检查 GitHub Secrets（CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN）以及 Wrangler 认证配置。" >&2
+            exit 1
+          fi
+          DB_UUID="$(LIST_JSON="$LIST_JSON" DB_NAME="$DB_NAME" node -e '
+            let list;
+            const raw = process.env.LIST_JSON;
+            if (!raw) {
+              process.stderr.write("`wrangler d1 list --json` 返回了空输出\n");
+              process.exit(1);
+            }
+            try {
+              list = JSON.parse(raw);
+            } catch {
+              process.stderr.write("无法解析 `wrangler d1 list --json` 的 JSON 输出\n");
+              process.exit(1);
+            }
+            if (!Array.isArray(list)) {
+              process.stderr.write("`wrangler d1 list --json` 的响应格式异常：预期为 JSON 数组\n");
+              process.exit(1);
+            }
+            const dbName = process.env.DB_NAME;
+            const found = list.find((db) => db && db.name === dbName);
+            if (found && found.uuid) process.stdout.write(found.uuid);
+          ')"
+
+          if [ -z "${DB_UUID}" ]; then
+            echo "未找到同名 D1 数据库，开始创建数据库: ${DB_NAME}"
+            if ! npx wrangler d1 create "${DB_NAME}"; then
+              echo "创建 D1 数据库 '${DB_NAME}' 失败。请检查账号权限/配额以及 Wrangler 认证。" >&2
+              exit 1
+            fi
+
+            echo "数据库创建命令已执行，正在重新获取 D1 数据库列表..."
+
+            if ! LIST_JSON="$(npx wrangler d1 list --json)"; then
+              echo "创建 '${DB_NAME}' 后，通过 Wrangler 获取 D1 数据库列表失败。" >&2
+              exit 1
+            fi
+            DB_UUID="$(LIST_JSON="$LIST_JSON" DB_NAME="$DB_NAME" node -e '
+              let list;
+              const raw = process.env.LIST_JSON;
+              if (!raw) {
+                process.stderr.write("创建后执行 `wrangler d1 list --json` 返回了空输出\n");
+                process.exit(1);
+              }
+              try {
+                list = JSON.parse(raw);
+              } catch {
+                process.stderr.write("无法解析创建后 `wrangler d1 list --json` 的 JSON 输出\n");
+                process.exit(1);
+              }
+              if (!Array.isArray(list)) {
+                process.stderr.write("创建后 `wrangler d1 list --json` 的响应格式异常：预期为 JSON 数组\n");
+                process.exit(1);
+              }
+              const dbName = process.env.DB_NAME;
+              const found = list.find((db) => db && db.name === dbName);
+              if (!found) {
+                process.stderr.write("在 `wrangler d1 list --json` 中未找到新创建的 D1 数据库\n");
+                process.exit(1);
+              }
+              if (!found.uuid) {
+                process.stderr.write("新创建的 D1 数据库在 `wrangler d1 list --json` 输出中缺少 uuid\n");
+                process.exit(1);
+              }
+              process.stdout.write(found.uuid);
+            ')"
+            if [ -z "${DB_UUID}" ]; then
+              echo "已创建 D1 数据库 '${DB_NAME}'，但无法从 `wrangler d1 list --json` 解析 UUID。" >&2
+              exit 1
+            fi
+            CREATED=true
+            echo "D1 数据库创建成功。"
+          else
+            CREATED=false
+            echo "D1 数据库已存在，跳过创建。"
+          fi
+
+          if [ -z "${DB_UUID}" ]; then
+            echo "无法解析 ${DB_NAME} 的 D1 数据库 UUID" >&2
+            exit 1
+          fi
+
+          echo "database_uuid=${DB_UUID}" >> "$GITHUB_OUTPUT"
+          echo "database_created=${CREATED}" >> "$GITHUB_OUTPUT"
+          echo "已解析 D1 数据库 UUID: ${DB_UUID}"
+
+      - name: 同步 D1 数据库 ID 到 wrangler.jsonc
+        id: sync_wrangler
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DB_NAME="${{ steps.resolve_d1_name.outputs.database_name }}"
+          DB_UUID="${{ steps.ensure_d1.outputs.database_uuid }}"
+
+          echo "开始同步 wrangler.jsonc 中的 D1 数据库配置..."
+          echo "将写入 database_name=${DB_NAME}，database_id=${DB_UUID}"
+
+          DB_NAME="$DB_NAME" DB_UUID="$DB_UUID" node -e '
+            const fs = require("fs");
+            const ts = require("typescript");
+            const path = "wrangler.jsonc";
+            const dbName = process.env.DB_NAME;
+            const dbUuid = process.env.DB_UUID;
+            const source = fs.readFileSync(path, "utf8");
+            const sourceFile = ts.parseJsonText(path, source);
+
+            function fail(msg) {
+              process.stderr.write(`${msg}\n`);
+              process.exit(1);
+            }
+
+            function getProperty(objectNode, name) {
+              return objectNode.properties.find((p) => {
+                if (!ts.isPropertyAssignment(p)) return false;
+                const key = p.name;
+                if (ts.isIdentifier(key)) return key.text === name;
+                if (ts.isStringLiteral(key)) return key.text === name;
+                return false;
+              });
+            }
+
+            const firstStmt = sourceFile.statements[0];
+            if (!firstStmt || !ts.isExpressionStatement(firstStmt) || !ts.isObjectLiteralExpression(firstStmt.expression)) {
+              fail("无法解析 wrangler.jsonc 的根对象");
+            }
+            const root = firstStmt.expression;
+
+            const d1Prop = getProperty(root, "d1_databases");
+            if (!d1Prop || !ts.isArrayLiteralExpression(d1Prop.initializer)) {
+              fail("wrangler.jsonc 中缺少 d1_databases 数组");
+            }
+
+            const d1Entry = d1Prop.initializer.elements.find((el) => {
+              if (!ts.isObjectLiteralExpression(el)) return false;
+              const bindingProp = getProperty(el, "binding");
+              return !!(bindingProp && ts.isStringLiteralLike(bindingProp.initializer) && bindingProp.initializer.text === "DB");
+            });
+
+            if (!d1Entry || !ts.isObjectLiteralExpression(d1Entry)) {
+              fail("无法在 wrangler.jsonc 中找到 binding=DB 的 d1_databases 条目");
+            }
+
+            const nameProp = getProperty(d1Entry, "database_name");
+            const idProp = getProperty(d1Entry, "database_id");
+            if (!nameProp || !idProp || !ts.isStringLiteralLike(nameProp.initializer) || !ts.isStringLiteralLike(idProp.initializer)) {
+              fail("在 DB 绑定配置中未找到 database_name/database_id 字符串字段");
+            }
+
+            const edits = [
+              { start: nameProp.initializer.getStart(sourceFile), end: nameProp.initializer.getEnd(), value: JSON.stringify(dbName) },
+              { start: idProp.initializer.getStart(sourceFile), end: idProp.initializer.getEnd(), value: JSON.stringify(dbUuid) }
+            ].sort((a, b) => b.start - a.start);
+
+            let updated = source;
+            // Apply edits by descending start offset (from file end to start) to avoid offset invalidation.
+            for (const edit of edits) {
+              updated = updated.slice(0, edit.start) + edit.value + updated.slice(edit.end);
+            }
+            fs.writeFileSync(path, updated);
+          '
+
+          if git diff --quiet -- wrangler.jsonc; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "未检测到 wrangler.jsonc 变更。"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "wrangler.jsonc 已更新。"
+          fi
+
+      - name: 根据 schema.sql 初始化 D1 数据库
+        if: steps.ensure_d1.outputs.database_created == 'true'
+        run: |
+          echo "检测到新建数据库，开始根据 schema.sql 初始化远程 D1 数据库..."
+          npx wrangler d1 execute "${{ steps.resolve_d1_name.outputs.database_name }}" --file=./schema.sql --remote
+
+      - name: 跳过 schema.sql 初始化（数据库已存在）
+        if: steps.ensure_d1.outputs.database_created != 'true'
+        run: echo "数据库已存在，跳过 schema.sql 初始化。"
+
+      - name: 创建 Pull Request 以同步 wrangler.jsonc
+        if: steps.sync_wrangler.outputs.changed == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ github.token }}
+          branch: chore/sync-d1-database-id-${{ github.run_id }}
+          base: ${{ github.ref_name }}
+          delete-branch: true
+          add-paths: wrangler.jsonc
+          commit-message: "维护：同步 wrangler.jsonc 中的 D1 数据库标识"
+          title: "维护：同步 wrangler.jsonc 中的 D1 数据库标识"
+          body: |
+            ## 摘要
+            - 在初始化工作流中从 Cloudflare 解析 D1 数据库 UUID
+            - 将 `wrangler.jsonc` 中的 `d1_databases[0]` 同步为最新的 `database_name` 与 `database_id`
+            - 保持 schema 初始化执行与解析出的数据库名称一致
+            ## 说明
+            该 PR 由工作流自动创建，请在合并前完成检查。
+            - [ ] 确认 `database_name` 配置正确
+            - [ ] 确认 `database_id` 与目标 D1 数据库一致

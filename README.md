@@ -23,6 +23,51 @@
 
 ## 🚀 快速开始 (Quick Start)
 
+下面的步骤介绍如何手动准备 Cloudflare 凭据、在 GitHub 中配置 Secrets，并使用仓库内的 GitHub Action 完成 D1 初始化，最后从仓库在 Cloudflare 上部署 Worker。
+
+### 1. 准备 Cloudflare Account ID
+
+- 登录 Cloudflare 控制台，选择你要使用的账号（Account）。
+- 在账号概览（Overview）页面可以看到 `Account ID`，复制该值并保留，后续会作为仓库 Secret 使用。
+
+### 2. 创建 API Token
+
+- 点击右上角头像 -> `My Profile` -> `API Tokens` -> `Create Token`。
+- 建议选择 `Create custom token`（自定义令牌），并为该令牌授予用于自动化初始化与部署的最少权限，例如：
+  - `Account` 范围下的 `D1 Databases: Edit`（或 `All`）
+  - 若需要通过 API 管理 Worker 脚本/部署，也可添加 `Workers Scripts: Edit` 权限
+- 在 `Account resources` 中选择目标账号，然后创建并复制生成的 API Token（仅显示一次，请妥善保存）。
+
+### 3. 将凭据写入 GitHub 仓库 Secrets
+
+- 打开 GitHub 仓库页面 -> `Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`。
+- 添加以下两个 Secrets：
+  - 名称：`CLOUDFLARE_ACCOUNT_ID`，值：你在第 1 步复制的 Account ID
+  - 名称：`CLOUDFLARE_API_TOKEN`，值：你在第 2 步创建的 API Token
+
+这些 Secret 会被仓库内的 GitHub Action 使用以访问 Cloudflare API。
+
+### 4. 运行初始化 GitHub Action（创建/同步 D1）
+
+- 本仓库包含一个用于初始化 D1 的 workflow：`.github/workflows/bootstrap-d1.yml`，工作流名称为 **初始化 Cloudflare D1 数据库**。
+- 在 GitHub 仓库页面，进入 `Actions` 选项卡，选择该 workflow，点击 `Run workflow`（或通过 `workflow_dispatch` 触发）。
+- 该工作流会执行下列操作：
+  - 解析 `wrangler.jsonc` 中配置的 `name` 以作为 D1 名称
+  - 若不存在同名 D1 则自动创建，并在首次创建时执行 `schema.sql` 初始化表结构
+  - 将解析到的 `database_id` 写回 `wrangler.jsonc`（如文件被修改，会提交并创建同步的 Pull Request）
+
+请等待 Action 运行完成并检查运行日志；若 Action 创建了 PR，请合并以更新仓库中的 `wrangler.jsonc`。
+
+### 5. 在 Cloudflare 上从仓库部署 Worker
+
+- 在 Cloudflare 仪表盘中进入 `Workers`，选择“Deploy from repository”（或类似的“从代码仓库部署”功能）。
+- 按提示连接你的 GitHub 仓库并选择要部署的分支/仓库（通常选择 `main` 或你合并 PR 的分支）。
+- 完成关联后，Cloudflare 会从仓库中读取 `wrangler.jsonc` 并进行部署。确保 `wrangler.jsonc` 中的 `name` 与你期望的 Worker 名称一致。
+
+---
+
+## 🚀 手动部署
+
 小白也能轻松上手的部署指南。
 
 ### 1. 准备工作
@@ -83,7 +128,7 @@ npx wrangler d1 execute uptime-db --file=./schema.sql --remote
 code config.yaml
 ```
 
-*(详细配置说明请见下文 [⚙️ 配置详解](#%EF%B8%8F-配置详解-configuration))*
+_(详细配置说明请见下文 [⚙️ 配置详解](#%EF%B8%8F-配置详解-configuration))_
 
 ### 6. 部署上线 (Deploy)
 
@@ -101,38 +146,38 @@ npx wrangler deploy
 
 ### 全局设置 (`settings`)
 
-| 字段 | 说明 | 推荐值 |
-|------|------|--------|
-| `title` | 状态页的标题 | "我的服务监控" |
-| `notification_on_down_only` | **🌟 特色**: 如果设为 `true`，则只在服务**挂掉 (DOWN)** 时发送通知，恢复时不再发送。适合不想被恢复通知打扰的用户。 | `true` |
-| `summary_exclusion` | **🌟 特色**: 在这里填入分组 ID，该分组将不会计入页面顶部的"系统整体状态"。适合用于监控一些非核心服务（如测试环境）。 | `["test_group"]` |
-| `callback_url` | 通用 Webhook 地址，状态变更时会向此 URL 发送 POST 请求。 | `""` |
+| 字段                        | 说明                                                                                                                 | 推荐值           |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `title`                     | 状态页的标题                                                                                                         | "我的服务监控"   |
+| `notification_on_down_only` | **🌟 特色**: 如果设为 `true`，则只在服务**挂掉 (DOWN)** 时发送通知，恢复时不再发送。适合不想被恢复通知打扰的用户。   | `true`           |
+| `summary_exclusion`         | **🌟 特色**: 在这里填入分组 ID，该分组将不会计入页面顶部的"系统整体状态"。适合用于监控一些非核心服务（如测试环境）。 | `["test_group"]` |
+| `callback_url`              | 通用 Webhook 地址，状态变更时会向此 URL 发送 POST 请求。                                                             | `""`             |
 
 ### 监控项配置 (`monitors`)
 
 每个监控项都有很多可调参数：
 
 ```yaml
-    monitors:
-      - id: "blog_main"
-        name: "个人博客"
-        type: "http"       # 支持 'http' 或 'tcp'
-        url: "https://blog.example.com"
-        method: "HEAD"     # 使用 HEAD 请求可以减少流量消耗
-        timeout: 5000      # 超时时间 (毫秒)
-        expected_latency: 500 # 期望延迟，虽然目前不影响状态，但用于图表参考
-        
-        # 🌟 特色: 防抖动机制
-        # 只有连续失败 3 次，才会判定为 DOWN 并发送通知
-        grace_period: 3    
-        
-        # 🌟 特色: 自定义验证
-        validation:
-          status: [200, 301, 302] # 允许的状态码列表
-          
-        display:
-          chart: true      # 是否显示延迟图表
-          public_link: true # 点击名称是否跳转
+monitors:
+  - id: "blog_main"
+    name: "个人博客"
+    type: "http" # 支持 'http' 或 'tcp'
+    url: "https://blog.example.com"
+    method: "HEAD" # 使用 HEAD 请求可以减少流量消耗
+    timeout: 5000 # 超时时间 (毫秒)
+    expected_latency: 500 # 期望延迟，虽然目前不影响状态，但用于图表参考
+
+    # 🌟 特色: 防抖动机制
+    # 只有连续失败 3 次，才会判定为 DOWN 并发送通知
+    grace_period: 3
+
+    # 🌟 特色: 自定义验证
+    validation:
+      status: [200, 301, 302] # 允许的状态码列表
+
+    display:
+      chart: true # 是否显示延迟图表
+      public_link: true # 点击名称是否跳转
 ```
 
 ### 故障公告 (`incidents`)
@@ -198,9 +243,11 @@ npx wrangler secret put RESEND_RECEIVE
 ## 🛠️ 开发与调试
 
 - **本地运行**:
+
   ```bash
   npx wrangler dev
   ```
+
   这会在本地启动服务，方便调试 UI 和逻辑。
 
 - **查看实时日志**:
