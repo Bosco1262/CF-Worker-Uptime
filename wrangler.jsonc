@@ -3,11 +3,11 @@
   "name": "cf-worker-uptime-monitor",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-15",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat"]
 
   // Cron 触发器（每分钟执行一次）
   "triggers": {
-    "crons": ["* * * * *"],
+    "crons": ["* * * * *"]
   },
 
   // D1 数据库绑定
@@ -16,7 +16,7 @@
       "binding": "DB",
       // 使用 action bootstrap-d1 自动生成/覆写
       "database_name": "",
-      "database_id": "",
+      "database_id": ""
     },
   ],
 
@@ -25,13 +25,13 @@
     {
       "type": "Text",
       "globs": ["**/*.yaml", "**/*.html"],
-      "fallthrough": true,
+      "fallthrough": true
     },
   ],
 
   // 可观测性配置
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1,
-  },
+    "head_sampling_rate": 1
+  }
 }
