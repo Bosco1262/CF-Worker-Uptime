@@ -90,7 +90,7 @@ npm install
 
 ### 3. 创建数据库
 
-我们需要一个 D1 数据库来存储监控历史。运行以下命令：
+我们需要一个 D1 数据库来存储监控历史，此处设置 D1 数据库名称为 `uptime-db` 。运行以下命令：
 
 ```bash
 npx wrangler d1 create uptime-db
@@ -99,7 +99,7 @@ npx wrangler d1 create uptime-db
 **⚠️ 重要步骤**:
 执行命令后，控制台会输出一段 JSON 信息。找到 `database_id`，复制它！
 
-打开项目根目录下的 `wrangler.jsonc` 文件，找到 `d1_databases` 部分，替换 `database_id`:
+打开项目根目录下的 `wrangler.jsonc` 文件，找到 `d1_databases` 部分，替换 `database_id` 和 前一步设置的 D1 数据库名称 `uptime-db` :
 
 ```jsonc
   "d1_databases": [
