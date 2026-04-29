@@ -260,7 +260,7 @@ jobs:
           base: ${{ github.ref_name }}
           delete-branch: true
           add-paths: wrangler.jsonc
-          commit-message: "维护：同步 wrangler.jsonc 中的 D1 数据库标识"
+          commit-message: "维护：同步 wrangler.jsonc 中的 binding=DB 的条目"
           title: "维护：同步 wrangler.jsonc 中的 D1 数据库标识"
           body: |
             ## 摘要
